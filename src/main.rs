@@ -3,7 +3,7 @@ mod lexer;
 use lexer::lexer::Lexer;
 
 fn main() {
-    let source = "1 + 2 * (3 - 4)";
+    let source = "let count = 42";
     println!("Rynix v0.1.0 — tokenizing: {}", source);
 
     let mut lex = Lexer::new(source);

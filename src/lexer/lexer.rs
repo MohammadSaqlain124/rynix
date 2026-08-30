@@ -1,11 +1,8 @@
 use super::token::{Token, TokenKind};
 
 pub struct Lexer {
-    // The source, as a list of characters so we can index it simply.
     chars: Vec<char>,
-    // How far we've read.
     pos: usize,
-    // Current location in the source, for diagnostics.
     line: usize,
     column: usize,
 }
@@ -20,14 +17,14 @@ impl Lexer {
         }
     }
 
-    // Look at the current character without consuming it.
-    // Returns None if we've reached the end of input.
     fn peek(&self) -> Option<char> {
         self.chars.get(self.pos).copied()
     }
 
-    // Consume the current character and advance the cursor,
-    // keeping line/column up to date.
+    fn peek_next(&self) -> Option<char> {
+        self.chars.get(self.pos + 1).copied()
+    }
+
     fn advance(&mut self) -> Option<char> {
         let c = self.peek()?;
         self.pos += 1;
@@ -40,16 +37,18 @@ impl Lexer {
         Some(c)
     }
 
-    // Turn the whole source into a list of tokens.
-    // Returns an error message if it hits a character it doesn't recognize.
     pub fn tokenize(&mut self) -> Result<Vec<Token>, String> {
         let mut tokens = Vec::new();
 
         while let Some(c) = self.peek() {
             if c.is_whitespace() {
                 self.advance();
+            } else if c == '/' && self.peek_next() == Some('/') {
+                self.skip_line_comment();
             } else if c.is_ascii_digit() {
                 tokens.push(self.read_number());
+            } else if is_identifier_start(c) {
+                tokens.push(self.read_identifier_or_keyword());
             } else if let Some(kind) = single_char_token(c) {
                 let line = self.line;
                 let column = self.column;
@@ -67,9 +66,15 @@ impl Lexer {
         Ok(tokens)
     }
 
-    // Read a run of digits into one Integer token.
-    // We record the start position so the token points at the number's
-    // first digit.
+    fn skip_line_comment(&mut self) {
+        while let Some(c) = self.peek() {
+            if c == '\n' {
+                break;
+            }
+            self.advance();
+        }
+    }
+
     fn read_number(&mut self) -> Token {
         let line = self.line;
         let column = self.column;
@@ -86,17 +91,59 @@ impl Lexer {
 
         Token::new(TokenKind::Integer(text), line, column)
     }
+
+    fn read_identifier_or_keyword(&mut self) -> Token {
+        let line = self.line;
+        let column = self.column;
+        let mut text = String::new();
+
+        while let Some(c) = self.peek() {
+            if is_identifier_continue(c) {
+                text.push(c);
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        let kind = keyword_kind(&text).unwrap_or(TokenKind::Identifier(text));
+        Token::new(kind, line, column)
+    }
 }
 
-// Map a single character to its token kind, if it is one.
 fn single_char_token(c: char) -> Option<TokenKind> {
     match c {
         '+' => Some(TokenKind::Plus),
         '-' => Some(TokenKind::Minus),
         '*' => Some(TokenKind::Star),
         '/' => Some(TokenKind::Slash),
+        '=' => Some(TokenKind::Equals),
         '(' => Some(TokenKind::LeftParen),
         ')' => Some(TokenKind::RightParen),
+        _ => None,
+    }
+}
+
+fn is_identifier_start(c: char) -> bool {
+    c.is_ascii_alphabetic() || c == '_'
+}
+
+fn is_identifier_continue(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+fn keyword_kind(word: &str) -> Option<TokenKind> {
+    match word {
+        "let" => Some(TokenKind::Let),
+        "const" => Some(TokenKind::Const),
+        "if" => Some(TokenKind::If),
+        "else" => Some(TokenKind::Else),
+        "while" => Some(TokenKind::While),
+        "for" => Some(TokenKind::For),
+        "fn" => Some(TokenKind::Fn),
+        "return" => Some(TokenKind::Return),
+        "true" => Some(TokenKind::True),
+        "false" => Some(TokenKind::False),
         _ => None,
     }
 }
@@ -123,7 +170,6 @@ mod tests {
     fn multi_digit_number_is_one_token() {
         let mut lexer = Lexer::new("12345");
         let tokens = lexer.tokenize().unwrap();
-        // One Integer token plus the Eof token.
         assert_eq!(tokens.len(), 2);
         assert_eq!(tokens[0].kind, TokenKind::Integer("12345".to_string()));
     }
@@ -167,5 +213,67 @@ mod tests {
         let mut lexer = Lexer::new("1 @ 2");
         let result = lexer.tokenize();
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn identifier_is_recognized() {
+        let mut lexer = Lexer::new("count");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::Identifier("count".to_string()));
+    }
+
+    #[test]
+    fn identifier_with_digits_and_underscore() {
+        let mut lexer = Lexer::new("_temp1");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::Identifier("_temp1".to_string()));
+    }
+
+    #[test]
+    fn keywords_are_distinguished_from_identifiers() {
+        let mut lexer = Lexer::new("let x");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::Let);
+        assert_eq!(tokens[1].kind, TokenKind::Identifier("x".to_string()));
+    }
+
+    #[test]
+    fn number_next_to_identifier_splits_correctly() {
+        let mut lexer = Lexer::new("1x");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::Integer("1".to_string()));
+        assert_eq!(tokens[1].kind, TokenKind::Identifier("x".to_string()));
+    }
+
+    #[test]
+    fn line_comment_is_skipped() {
+        let mut lexer = Lexer::new("1 // this is ignored\n2");
+        let tokens = lexer.tokenize().unwrap();
+        let kinds: Vec<TokenKind> = tokens.into_iter().map(|t| t.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::Integer("1".to_string()),
+                TokenKind::Integer("2".to_string()),
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn assignment_expression() {
+        let mut lexer = Lexer::new("let count = 42");
+        let tokens = lexer.tokenize().unwrap();
+        let kinds: Vec<TokenKind> = tokens.into_iter().map(|t| t.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::Let,
+                TokenKind::Identifier("count".to_string()),
+                TokenKind::Equals,
+                TokenKind::Integer("42".to_string()),
+                TokenKind::Eof,
+            ]
+        );
     }
 }

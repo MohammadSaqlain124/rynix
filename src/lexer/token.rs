@@ -13,11 +13,26 @@ pub enum TokenKind {
     // Identifiers: names like `x`, `count`, `main`.
     Identifier(String),
 
+    // Keywords: reserved words that look like identifiers but have
+    // special meaning. Recognized by reading a word, then checking it
+    // against the keyword list.
+    Let,
+    Const,
+    If,
+    Else,
+    While,
+    For,
+    Fn,
+    Return,
+    True,
+    False,
+
     // Operators
     Plus,     // +
     Minus,    // -
     Star,     // *
     Slash,    // /
+    Equals,   // =
 
     // Grouping
     LeftParen,   // (
