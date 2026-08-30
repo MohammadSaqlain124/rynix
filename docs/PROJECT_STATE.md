@@ -1,53 +1,76 @@
 # Rynix — Project State
 
-**Last updated:** 2026-08-29, 20:07 IST
+## Session log
+
+### 2026-08-29, 20:07 IST
+- Resolved full environment setup (Windows PATH issue; Rust 1.98.0 confirmed).
+- Consolidated a nested-folder mistake into one clean project.
+- Finalized design doc (docs/DESIGN.md) and README.
+- Committed scaffolding: `cargo run` prints the banner.
+- Commits: 4e930ec (design doc), 1e1196c (skeleton).
+
+### 2026-08-30, 22:35 IST
+- Built the Token data structures (TokenKind enum + Token struct) with tests.
+- Implemented the lexer: whitespace-skipping, integers, single-char
+  operators, parentheses, Eof, with line/column positions and clean
+  errors for illegal characters.
+- Extended the lexer: identifiers, 10 keywords (read-then-classify),
+  and the `=` token.
+- Changed comment syntax from `//` to `~...~` (delimited, multi-line),
+  with an unterminated-comment error. Added a `lettuce`-is-not-`let`
+  regression test.
+- Wrote learning notes (docs/NOTES.md sections 0–10) and generated a
+  printable PDF of the notes (kept outside the repo).
+- Commits: e310eed (Token types), 28ffa6a (lexer core),
+  5555721 (identifiers/keywords/comments/=), 7c703a2 (~...~ comments).
 
 ## Snapshot
-- Current version: v0.1.0 (scaffolding complete)
-- Current milestone: Milestone 1 — lexer (about to write first real code)
+- Current version: v0.1.0 — LEXER COMPLETE.
+- Current milestone: about to begin Milestone 2 (v0.2) — the parser.
 
 ## What works
-- Cargo project compiles and runs; prints "Rynix v0.1.0 — compiler skeleton".
-- Repo live on GitHub (MohammadSaqlain124/rynix), branch `main`, upstream tracking set.
-- Clean 2-commit history:
-  - 4e930ec — docs: add initial language design document
-  - 1e1196c — chore: initialize cargo project skeleton
-
-## What we just implemented
-- Full environment setup (resolved Windows PATH issue; Rust 1.98.0 confirmed).
-- Consolidated a nested-folder mistake into one clean project at
-  E:\Projects\rynix\rynix.
-- Finalized design doc (docs/DESIGN.md) and README.
+- Lexer turns source text into a located token stream:
+  integers, identifiers, 10 keywords (let, const, if, else, while, for,
+  fn, return, true, false), operators `+ - * / =`, parentheses,
+  `~...~` multi-line comments, whitespace, and Eof.
+- Line/column tracked on every token (for future diagnostics).
+- Clean errors for illegal characters and unterminated comments.
+- 17 passing tests, no warnings.
+- Repo: MohammadSaqlain124/rynix, branch main, all pushed.
 
 ## Decisions locked
-- Name: Rynix. Extension: .ryx.
-- Implementation language: Rust (straight away).
+- Name: Rynix. Extension: .ryx. Implementation: Rust.
 - Philosophy: diagnostics-first, DSA-capable, safety-flavoured, GC-backed.
 - Strategy: tree-walk interpreter -> bytecode VM -> deferred native back-end.
 - Type system: static, nominal, explicit-first (local inference later).
 - Memory: value semantics early -> simple mark-sweep GC later.
+- Integers: i64 semantics, BUT the lexer stores literals as String so the
+  representation stays swappable (i64 -> bignum later won't touch the lexer).
+- Comments: `~ ... ~` (deliberately distinct; can be multi-line;
+  unterminated is an error).
 
 ## Files
-- Created: docs/DESIGN.md, docs/PROJECT_STATE.md, README.md
-- Present: Cargo.toml, src/main.rs, .gitignore, Cargo.lock
+- src/lexer/token.rs — Token, TokenKind (+ keyword variants, Equals).
+- src/lexer/lexer.rs — the lexer + 15 unit tests.
+- src/lexer/mod.rs — module wiring (exposes token + lexer).
+- src/main.rs — tokenizes a sample line and prints the tokens.
+- docs/DESIGN.md, docs/NOTES.md, docs/PROJECT_STATE.md, README.md.
 
 ## Tests
-- None yet. First unit test arrives with the Token type.
+- 17 passing (2 token + 15 lexer), incl. negative tests for illegal
+  characters and unterminated comments.
 
 ## Known bugs / limitations
-- Compiler does nothing but print a banner.
-- (Cosmetic) Project path is doubled: E:\Projects\rynix\rynix — harmless, left as-is.
-
-## OPEN DECISIONS (needed before next code step)
-1. Confirm understanding of Rust enums with data-carrying variants
-   (Circle(f64) / Rectangle(f64, f64) shape).
-2. Integer model: i64 (fixed 64-bit) vs arbitrary precision.
-   - Claude's recommendation: i64 for now, document the limit,
-     revisit bignum as a later feature. Reason pending Sam's choice.
+- No floats, strings, or multi-char operators (==, !=, <=) yet.
+- No parser/AST yet — tokens are still a flat list, not a tree.
+- (Cosmetic) project path is doubled: E:\Projects\rynix — harmless.
 
 ## Next milestone
-- Still v0.1 — the lexer.
+- v0.2 — the parser (turn the token stream into an AST).
 
 ## Next task
-- Create src/lexer/token.rs: define TokenKind enum + Token struct + first
-  unit test. No lexing logic yet — data structures first.
+- Start the parser by first defining the AST (Abstract Syntax Tree) data
+  structures — "data before algorithm". Begin with the concept: what an
+  AST is, and how `1 + 2 * 3` becomes a tree where `*` binds tighter
+  than `+`. THEN write the parsing logic. This is the biggest conceptual
+  leap so far (grammar, precedence, recursion).
