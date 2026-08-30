@@ -21,10 +21,6 @@ impl Lexer {
         self.chars.get(self.pos).copied()
     }
 
-    fn peek_next(&self) -> Option<char> {
-        self.chars.get(self.pos + 1).copied()
-    }
-
     fn advance(&mut self) -> Option<char> {
         let c = self.peek()?;
         self.pos += 1;
@@ -43,8 +39,8 @@ impl Lexer {
         while let Some(c) = self.peek() {
             if c.is_whitespace() {
                 self.advance();
-            } else if c == '/' && self.peek_next() == Some('/') {
-                self.skip_line_comment();
+            } else if c == '~' {
+                self.skip_comment()?;
             } else if c.is_ascii_digit() {
                 tokens.push(self.read_number());
             } else if is_identifier_start(c) {
@@ -66,13 +62,27 @@ impl Lexer {
         Ok(tokens)
     }
 
-    fn skip_line_comment(&mut self) {
+    // Skip a comment delimited by ~ on both sides, e.g. ~ like this ~.
+    // The comment may span multiple lines. If the closing ~ is never
+    // found, that's an error rather than silently eating the rest of
+    // the file.
+    fn skip_comment(&mut self) -> Result<(), String> {
+        let start_line = self.line;
+        let start_column = self.column;
+        self.advance(); // consume the opening ~
+
         while let Some(c) = self.peek() {
-            if c == '\n' {
-                break;
+            if c == '~' {
+                self.advance(); // consume the closing ~
+                return Ok(());
             }
             self.advance();
         }
+
+        Err(format!(
+            "unterminated comment starting at line {}, column {}",
+            start_line, start_column
+        ))
     }
 
     fn read_number(&mut self) -> Token {
@@ -238,6 +248,13 @@ mod tests {
     }
 
     #[test]
+    fn lettuce_is_not_the_let_keyword() {
+        let mut lexer = Lexer::new("lettuce");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::Identifier("lettuce".to_string()));
+    }
+
+    #[test]
     fn number_next_to_identifier_splits_correctly() {
         let mut lexer = Lexer::new("1x");
         let tokens = lexer.tokenize().unwrap();
@@ -246,8 +263,8 @@ mod tests {
     }
 
     #[test]
-    fn line_comment_is_skipped() {
-        let mut lexer = Lexer::new("1 // this is ignored\n2");
+    fn comment_is_skipped() {
+        let mut lexer = Lexer::new("1 ~ this is ignored ~ 2");
         let tokens = lexer.tokenize().unwrap();
         let kinds: Vec<TokenKind> = tokens.into_iter().map(|t| t.kind).collect();
         assert_eq!(
@@ -258,6 +275,28 @@ mod tests {
                 TokenKind::Eof,
             ]
         );
+    }
+
+    #[test]
+    fn multiline_comment_is_skipped() {
+        let mut lexer = Lexer::new("1 ~ spanning\ntwo lines ~ 2");
+        let tokens = lexer.tokenize().unwrap();
+        let kinds: Vec<TokenKind> = tokens.into_iter().map(|t| t.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::Integer("1".to_string()),
+                TokenKind::Integer("2".to_string()),
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn unterminated_comment_errors() {
+        let mut lexer = Lexer::new("1 ~ oops no closing");
+        let result = lexer.tokenize();
+        assert!(result.is_err());
     }
 
     #[test]
