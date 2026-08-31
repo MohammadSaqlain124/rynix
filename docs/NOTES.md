@@ -606,3 +606,105 @@ Full pipeline works: source -> tokens -> AST. Handles + - * /, nested
 parentheses, correct precedence and left-associativity, located syntax
 errors. 29 passing tests, no warnings. `1 + 2 * (3 - 4)` builds the
 correctly-shaped tree automatically.
+
+---
+
+## 13. The Interpreter (tree-walking evaluation)
+
+### What it does
+
+We had a tree (the AST). The evaluator WALKS the tree and computes a
+single number. For `1 + 2 * 3` it produces `7`. This is the first time
+the whole pipeline runs end to end: source -> tokens -> tree -> RESULT.
+
+The method is called TREE-WALKING because you literally traverse the AST
+node by node, computing as you go. It is RECURSIVE, like the parser,
+because the tree is recursive.
+
+### Two rules (that's the whole evaluator)
+
+- Number node -> interpret its text as an actual i64 integer.
+- Binary node -> evaluate the LEFT child, evaluate the RIGHT child, then
+  combine them with the operator.
+
+Rule 2 is recursive: to evaluate a Binary, you first evaluate its
+children — which may themselves be Binary nodes — all the way down until
+you hit Number leaves. The recursion bottoms out at numbers.
+
+Trace of 1 + 2 * 3 (tree: + on top, 2*3 as its right child):
+1. Evaluate top +. Need left and right first.
+2. Left = Number("1") -> 1.
+3. Right = the * node. Evaluate it: 2 * 3 = 6.
+4. Back at +: 1 + 6 = 7.
+
+Analogy: totalling a bill. To get the grand total (the top +) you first
+total each section (the * subtree). You work from innermost sub-totals
+outward — leaves to root.
+
+### Children-first gives precedence for free
+
+The evaluator knows NOTHING about which operator binds tighter. It just
+follows one dumb rule: evaluate my children before I combine them.
+
+Because the parser already put the tighter-binding operator LOWER in the
+tree (as a child), "children first" computes it earlier — automatically.
+Precedence was DECIDED by the parser (in the tree shape) and is merely
+OBEYED by the evaluator.
+
+Division of labour worth remembering:
+- Precedence is a PARSING concern, decided once, in the tree's shape.
+- Evaluation is dumb on purpose — walk children-first, the shape does
+  the rest.
+- Add a new operator with new precedence -> change the GRAMMAR; the
+  evaluator needs ZERO changes.
+
+### The deferred i64 decision finally lands here
+
+Way back, we stored integers as text (String) so the lexer and parser
+would not commit to a number representation. The EVALUATOR is the phase
+that owns that decision, because it is the phase that actually does
+arithmetic.
+
+`text.parse::<i64>()` turns "42" into the i64 value 42. The `::<i64>`
+literally names our representation choice. If we ever switch to bignum,
+THIS ONE LINE changes; nothing else in the codebase does. This is the
+"defer the decision to the phase that owns it" principle paying off
+exactly as planned.
+
+### Syntax error vs runtime error (important distinction)
+
+- SYNTAX error: a problem with the FORM of the code. Caught by the
+  parser, before anything runs, just by looking at how tokens are
+  arranged. Example: `(1 + 2` (missing close paren) — malformed.
+- RUNTIME error: a problem that only appears WHILE executing. The code is
+  shaped correctly, but doing what it says hits an impossible operation.
+  Example: `10 / 0` — a perfectly valid tree, but you cannot divide by
+  zero.
+
+Parsing asks "is this valid code?"; evaluation asks "does running this
+valid code work?" That is why `eval` returns a Result: some well-formed
+trees still cannot be computed.
+
+### Other notes
+
+- Integer division truncates: 7 / 2 = 3 (not 3.5), because i64 division
+  discards the remainder. This is a deliberate language decision, proven
+  by a test. Floats later will divide differently.
+- Division by zero is checked explicitly and returns a clean error
+  instead of crashing (Rust would otherwise panic).
+- `eval` is a free function (no state) for now. When variables arrive
+  (let x = 5), we'll add an ENVIRONMENT to remember values, and eval will
+  take that as a parameter. We add state exactly when it's needed, not
+  before.
+- The `?` operator propagates a child's error straight to the top, so an
+  error anywhere in the tree (e.g. 1 + 10/0) surfaces cleanly.
+
+### Files
+- src/interpreter/eval.rs (new) — the evaluator + 9 tests.
+- src/interpreter/mod.rs (new) — exposes eval.
+- src/main.rs (updated) — full pipeline; prints the computed Result.
+
+### Status
+Rynix computes. Full pipeline source -> tokens -> AST -> result, with
+correct precedence/associativity, integer semantics, division-by-zero
+handling. 38 passing tests, no warnings.
