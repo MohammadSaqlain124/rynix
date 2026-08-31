@@ -277,3 +277,332 @@ Negative tests prove the compiler fails *gracefully*.
 - `src/lexer/lexer.rs` (new) — the lexer.
 - `src/lexer/mod.rs` (updated) — now exposes both `token` and `lexer`.
 - `src/main.rs` (updated) — tokenizes a sample expression
+
+---
+
+## 10. Identifiers, keywords, and comments
+
+### Identifiers (names)
+
+An identifier is a name like `x`, `count`, `main`, `_temp1`. The rule:
+- The FIRST character must be a letter or underscore.
+- The REST can be letters, digits, or underscores.
+
+So `count`, `_temp`, and `x1` are valid; `1x` is not an identifier — it
+reads as the number `1` followed by the identifier `x`.
+
+This is handled by `read_identifier_or_keyword`, which uses the SAME loop
+pattern as `read_number`: start on a valid first character, then keep
+consuming while the next characters are valid. Identifiers are numbers'
+cousin.
+
+Two helper functions express the "first vs rest" rule:
+- `is_identifier_start`  -> letter or underscore
+- `is_identifier_continue` -> letter, digit, or underscore
+
+### Keywords (the "read then classify" trick)
+
+Keywords are reserved words like `let` and `if`. They LOOK exactly like
+identifiers (they're just letters). So how does the lexer know `let` is
+special but `count` isn't?
+
+The trick: **read the whole word first, THEN check if it's a keyword.**
+We read every letter (`l`, `e`, `t`), get the finished word, and look it
+up in a keyword list. If it's there -> keyword token. If not -> plain
+identifier.
+
+Because the check happens on the COMPLETE word, `lettuce` is never
+mistaken for `let` + `tuce`. The lexer reads all of `lettuce`, checks the
+list, doesn't find it, and makes it an identifier.
+
+The key line does this compactly:
+`keyword_kind(&text).unwrap_or(TokenKind::Identifier(text))`
+= "if it's a keyword use that; otherwise, it's an identifier."
+
+### Rynix's keywords (so far)
+
+These 10 words are reserved. The lexer recognizes them now; their exact
+meaning is defined later when the parser and semantics reach them.
+
+| Keyword  | Purpose (planned)                     |
+|----------|---------------------------------------|
+| let      | declare a variable                    |
+| const    | declare a constant                    |
+| if       | conditional                           |
+| else     | the alternative branch of an if       |
+| while    | loop while a condition holds          |
+| for      | loop over a range/collection          |
+| fn       | define a function                     |
+| return   | return a value from a function        |
+| true     | boolean literal (true)                |
+| false    | boolean literal (false)               |
+
+More keywords will be added as the language grows.
+
+### Comments: Rynix uses ~ ... ~
+
+Most languages use `//` or `/* */`. Rynix deliberately uses a tilde on
+both sides — `~ this is a comment ~` — mainly to look distinct. Comments
+are for humans; the lexer discards them and they never become tokens.
+
+Design consequences (honest notes):
+- A Rynix comment can span MULTIPLE lines (like a block comment), which a
+  `//` line comment couldn't.
+- Because it's delimited by `~` on both sides, forgetting the closing `~`
+  would eat the rest of the file. So an unterminated comment is treated
+  as an ERROR (with the position where it started), not silently ignored.
+- Using `~` for comments means `~` can't also be an operator later. We
+  don't need it as one, so that's an acceptable trade.
+
+`skip_comment` consumes the opening `~`, then everything up to the next
+`~`. If it reaches the end of input first, it returns an error.
+
+### Files changed
+- `src/lexer/token.rs` — added keyword variants (Let, Const, ... False)
+  and the `=` token (Equals). (Comments need NO token — they're discarded.)
+- `src/lexer/lexer.rs` — added identifier/keyword reading, `~...~`
+  comment skipping, and unterminated-comment errors.
+- `src/main.rs` — demo now tokenizes `let count = 42 ~ a comment ~`.
+
+### Status
+The lexer is complete for our core vocabulary: integers, identifiers, 10
+keywords, `+ - * / =`, parentheses, `~...~` comments, whitespace, and
+Eof — all with line/column positions, and clean errors for bad input.
+16 passing tests.
+
+---
+
+## 11. The AST (Abstract Syntax Tree)
+
+### The problem the AST solves
+
+The lexer gave us a flat LIST of tokens:
+
+    1 + 2 * 3  ->  [ Integer("1"), Plus, Integer("2"), Star, Integer("3") ]
+
+But a flat list doesn't capture MEANING. `1 + 2 * 3` should be 7, not 9,
+because `*` binds tighter than `+` (do 2*3 first, then 1+6). The list has
+no notion of grouping or priority — everything is at the same level.
+
+We need a structure that captures how the pieces RELATE. That structure
+is a TREE — the Abstract Syntax Tree.
+
+### Tree shape encodes meaning
+
+`1 + 2 * 3` becomes:
+
+        +
+       / \
+      1   *
+         / \
+        2   3
+
+The shape itself encodes "multiply before add". To compute the top `+`,
+you must first compute its children — and its right child is `2 * 3`. So
+the `*` runs first even though it's lower.
+
+**Key rule:** the tree shape is decided by PRECEDENCE, not by reading
+order.
+- Tighter-binding operator (*) -> sinks LOWER -> computed EARLIER.
+- Looser-binding operator (+)   -> rises to TOP -> computed LAST.
+- The operator at the top of the tree runs LAST.
+
+Proof that reading order doesn't matter: `3 * 2 + 1` (where * appears
+first in the text) STILL puts `+` on top, because + binds looser. Same
+shape logic as `1 + 2 * 3`.
+
+Parentheses OVERRIDE precedence: `(1 + 2) * 3` forces the + into a group
+that must run first, so + sinks low and * rises to the top:
+
+        *
+       / \
+      +   3
+     / \
+    1   2
+
+Order of authority: parentheses beat precedence; precedence beats reading
+order; reading order doesn't matter at all.
+
+### Why "Abstract"
+
+The tree KEEPS the essential structure and DROPS surface details that
+were only there to help write it as text — parentheses, spaces. In
+`(1 + 2) * 3` the parentheses were vital in the text, but the tree
+already captures that grouping in its SHAPE, so it doesn't store the
+parentheses themselves.
+
+Analogy: a family tree captures relationships (who is whose parent), not
+where people stood in a photo. The AST is the family tree of the program.
+
+### Expressions are recursive
+
+An expression is:
+- a number, OR
+- two expressions joined by an operator (left OP right), OR
+- ...
+
+"Expression" appears inside its own definition. That recursion is why
+programs can nest to any depth (1 + 2 * 3 - 4 / 5). Building a parser is
+one of the best ways to truly understand recursion, because you BUILD the
+tree, not just walk one.
+
+### The Rust code: src/parser/ast.rs
+
+Two types:
+
+- `Expr` — an enum of expression shapes:
+  - `Number(String)` — a number literal, stored as TEXT (same reason as
+    the lexer: don't commit to i64 vs bignum; a later phase interprets it).
+  - `Binary { left, op, right }` — a binary operation. `left` and `right`
+    are themselves expressions (the recursive case). Uses named fields so
+    left/right (both the same type) don't get mixed up.
+
+- `BinaryOp` — a small enum of exactly four operators (Add, Subtract,
+  Multiply, Divide). A SEPARATE enum (not reusing TokenKind) so the type
+  system guarantees an operator is always one of these four — you can't
+  build a Binary with a parenthesis as its operator.
+
+### New Rust concept: Box (for recursive types)
+
+A type cannot directly contain itself. If `Binary` held a plain `Expr` on
+each side, the type would need INFINITE size (a + holds two Exprs, each
+of which could be a + holding two more... forever). Rust needs every type
+to have a known, finite size at compile time.
+
+Fix: `Box<Expr>`. A Box is a POINTER to an Expr stored on the heap. A
+pointer has a fixed, known size (just an address), no matter how big the
+thing it points to is. So the type is finite, and the tree can still nest
+to any depth — each level is just a pointer to the next.
+
+To read the value through a Box, use `*` (dereference): `*left` follows
+the pointer to get the Expr.
+
+### Data before algorithm (again)
+
+We defined WHAT the tree is before writing the code that BUILDS it. The
+tests construct trees BY HAND (e.g. the 1 + 2 * 3 tree) to prove the data
+structures can represent the shapes we want. There is NO parser yet — the
+parser (next step) will build these same shapes automatically from tokens.
+Building them by hand first means we already know what "correct" looks
+like.
+
+### Files
+- `src/parser/ast.rs` (new) — Expr, BinaryOp, and by-hand tree tests.
+- `src/parser/mod.rs` (new) — exposes the ast module.
+- `src/main.rs` (updated) — registered the parser module.
+
+### Status
+AST data structures done, 3 tests. Dead-code warnings (Subtract, Divide,
+Expr, BinaryOp "never used") are EXPECTED — nothing builds these yet. The
+parser will.
+
+---
+
+## 12. The Parser (recursive descent)
+
+### What the parser does
+
+The lexer gave us a flat LIST of tokens. The parser reads that list and
+builds the TREE (the AST), getting precedence right automatically. It is
+the bridge from "words in a row" to "structured meaning".
+
+We use RECURSIVE DESCENT — the most common hand-written parsing method,
+and the most readable: the code ends up mirroring the language's grammar,
+one function per rule.
+
+### Step 1: a grammar
+
+Before parsing, we describe precisely what a valid expression is. That
+description is a GRAMMAR — rules saying "this thing is made of these
+smaller things":
+
+    expression -> term (("+" | "-") term)*
+    term       -> factor (("*" | "/") factor)*
+    factor     -> NUMBER | "(" expression ")"
+
+Reading the notation:
+- `|`  means "or".
+- `*` at the end of a line means "repeat zero or more times".
+- `factor` is the smallest piece: a NUMBER, or a whole expression inside
+  parentheses (the recursive case).
+- `term` handles * and /: a factor, then zero-or-more of (*|/) factor.
+- `expression` handles + and -: same shape, one level up, built from terms.
+
+### Step 2: the key insight — layering IS precedence
+
+The operators are separated by LEVEL:
+- + and - live in `expression` (the TOP level).
+- * and / live in `term` (the level BELOW).
+- `expression` is built out of `term`s.
+
+Because `expression` CALLS `term`, and `term` runs to COMPLETION before
+returning, `term` greedily grabs the entire `2 * 3` before `expression`
+ever builds the `+`. So the `*` gets bound tightly and sits LOWER in the
+tree.
+
+**Deeper rule -> runs to completion first -> binds tighter.**
+
+We never wrote an "if operator is * then higher priority" rule. Precedence
+falls out of the grammar's nesting for free. Want a new operator that
+binds tighter than *? Add a new level BELOW factor. Looser than +? Add a
+level ABOVE expression. Precedence = which level you live on.
+
+### Step 3: "recursive descent" explained
+
+- DESCENT: the parser descends through levels —
+  parse_expression -> parse_term -> parse_factor — loosest to tightest.
+- RECURSIVE: parse_factor can call parse_expression again (for a
+  parenthesized group), so the whole thing loops back on itself. That is
+  what lets parentheses nest to any depth: ((42)).
+
+Analogy: nested Russian dolls sorted by rule. To open the outer doll
+(expression) you must first fully open the one inside (term), and inside
+that (factor). A factor that is ( ... ) contains a whole new set of dolls.
+
+### The code: src/parser/parser.rs
+
+- One function per grammar rule: parse_expression, parse_term,
+  parse_factor. Each body mirrors its grammar line almost word for word.
+- Mechanical tools (cursor over the token list):
+  - peek()   -> look at the current token without consuming.
+  - advance() -> consume the current token, move forward.
+  - expect(kind) -> consume only if it matches, else a located error.
+- parse() is the entry point: parse one expression, then require Eof
+  (nothing left over).
+
+### Left-associativity (a real correctness property)
+
+In parse_expression / parse_term, each loop iteration does:
+
+    left = Binary { left: Box::new(left), op, right };
+
+It wraps the tree built SO FAR as the new node's LEFT child. So
+`1 - 2 - 3` builds `((1 - 2) - 3)` — the earliest operation ends up
+deepest on the left. That is LEFT-associativity, and it is correct:
+1 - 2 - 3 means (1-2)-3 = -4, not 1-(2-3) = 2. Most beginners get this
+wrong; our loop shape gets it right by construction.
+
+### Diagnostics beginning
+
+`expect` produces located errors ("expected RightParen, found ... at line
+X, column Y"). So `(1 + 2` (missing close paren) fails cleanly instead of
+crashing. The messages are basic now, but the location-aware MACHINERY is
+in place — the start of the "diagnostics-first" goal.
+
+### Honest note: .clone()
+
+The parser clones a few tokens for simplicity. Cloning has a small cost,
+but for a learning compiler on small inputs it is fine and keeps the code
+clear. Avoiding clones now would be premature optimization. Revisit only
+if benchmarks ever show it matters.
+
+### Files
+- src/parser/parser.rs (new) — the parser + 9 tests.
+- src/parser/mod.rs (updated) — exposes ast and parser.
+- src/main.rs (updated) — now lexes AND parses, printing the tree.
+
+### Status
+Full pipeline works: source -> tokens -> AST. Handles + - * /, nested
+parentheses, correct precedence and left-associativity, located syntax
+errors. 29 passing tests, no warnings. `1 + 2 * (3 - 4)` builds the
+correctly-shaped tree automatically.
