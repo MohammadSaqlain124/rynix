@@ -796,3 +796,102 @@ them.
 ### Status
 Unary minus works: -5, -(3+2), --5, correct precedence (-2 + 3 = 1,
 -2 * 3 = -6), mixed binary/unary (10 - -3 = 13). 49 passing tests.
+
+---
+
+## 15. Variables — statements and the environment
+
+This is the step where Rynix stopped being a calculator (one expression,
+one value) and became a real language: a PROGRAM is a sequence of
+statements that share memory.
+
+### Statements vs expressions
+
+- EXPRESSION: produces a value. `y * 10`, `x + 2`. You can ask "what does
+  it equal?"
+- STATEMENT: does an ACTION, not necessarily a value. `let x = 5` creates
+  a binding. Asking "what does `let x = 5` equal?" doesn't make sense.
+
+Analogy: a recipe. "2 cups flour + 1 cup sugar" is an EXPRESSION (a
+quantity). "Preheat the oven to 180C" is a STATEMENT (an action that
+changes state). A program, like a recipe, is a SEQUENCE of statements,
+some of which contain expressions.
+
+We keep Stmt and Expr as SEPARATE Rust types, so the type system enforces
+the distinction — you can't use a statement where a value is expected.
+
+### The new grammar (a top layer above expressions)
+
+    program              -> statement*
+    statement            -> let_statement | expression_statement
+    let_statement        -> "let" IDENTIFIER "=" expression
+    expression_statement -> expression
+
+A program is zero-or-more statements. A statement is a `let` or a bare
+expression. Statements sit ABOVE expressions and CONTAIN them.
+
+### The environment (memory)
+
+When you write `let x = 5`, the evaluator must REMEMBER that x is 5 so a
+later statement can use it. That memory is the ENVIRONMENT — a map from
+names to values: HashMap<String, i64>.
+
+    { "x" -> 5, "y" -> 7 }
+
+Two operations:
+- DEFINE: `env.insert(name, value)` — `let x = 5` stores x -> 5. Because
+  insert overwrites, re-declaring (`let x = 10`) just changes x. That's
+  our chosen "let defines-or-overwrites" behaviour.
+- LOOK UP: `env.get(name)` — evaluating the expression `x` reads its
+  value. If the name isn't there -> "undefined variable" error.
+
+### Why the evaluator was stateless before
+
+Three sessions ago, `eval` was a plain function with no state, and we said
+"add state when it's needed, not before." THIS is that moment. Before
+variables, there was nothing to remember. Now `eval` takes the
+environment as a parameter. We didn't build it speculatively — we added it
+exactly when the feature that needs it arrived.
+
+### Three levels: run / exec / eval
+
+Mirrors the grammar's layers (program -> statement -> expression):
+- run(program)   -> makes one environment, executes each statement in
+                    order, threading the SAME env through all of them so
+                    later statements see earlier variables. Returns the
+                    last expression's value.
+- exec(stmt)     -> runs one statement. `let` defines (no value);
+                    a bare expression is evaluated and its value returned.
+- eval(expr)     -> evaluates one expression, using the env to look up
+                    variables.
+
+The SHARED environment threaded through every statement is what makes a
+program more than a list of independent expressions — it's the memory
+connecting them.
+
+### Rust detail: &mut env vs &env
+
+- exec takes `&mut Env` — a statement (let) can CHANGE the environment.
+- eval takes `&Env` — an expression only READS variables, never defines
+  them.
+The types document who is allowed to modify memory: statements can,
+expressions can't. A real language rule enforced by Rust's borrow system.
+
+### The lexer needed NO change
+
+We already tokenized `let`, identifiers, and `=` (built in early). That
+foresight paid off — this whole step touched only the AST, parser, and
+evaluator.
+
+### Files
+- src/parser/ast.rs — added Expr::Identifier, the Stmt type (Let,
+  Expression), and Program (= Vec<Stmt>).
+- src/parser/parser.rs — parse_program/statement/let_statement; factor
+  now accepts an identifier.
+- src/interpreter/eval.rs — the environment (HashMap) + run/exec/eval.
+- src/main.rs — runs a whole program, prints the final value.
+
+### Status
+Multi-statement programs run. Variables are defined, remembered across
+statements, looked up, and overwritten by re-let. Undefined variables
+error cleanly. `let x = 5; let y = x + 2; y * 10` -> 70. 58 passing tests.
