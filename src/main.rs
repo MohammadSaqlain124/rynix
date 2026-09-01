@@ -2,13 +2,13 @@ mod interpreter;
 mod lexer;
 mod parser;
 
-use interpreter::eval::eval;
+use interpreter::eval::run;
 use lexer::lexer::Lexer;
 use parser::parser::Parser;
 
 fn main() {
-    let source = "-2 * (3 - 5) + -1";
-    println!("Rynix v0.1.0 — evaluating: {}", source);
+    let source = "let x = 5\nlet y = x + 2\ny * 10";
+    println!("Rynix v0.1.0 — running program:\n{}\n", source);
 
     let mut lex = Lexer::new(source);
     let tokens = match lex.tokenize() {
@@ -20,16 +20,17 @@ fn main() {
     };
 
     let mut parser = Parser::new(tokens);
-    let expr = match parser.parse() {
-        Ok(expr) => expr,
+    let program = match parser.parse() {
+        Ok(program) => program,
         Err(message) => {
             println!("Parse error: {}", message);
             return;
         }
     };
 
-    match eval(&expr) {
-        Ok(result) => println!("Result: {}", result),
+    match run(&program) {
+        Ok(Some(value)) => println!("Result: {}", value),
+        Ok(None) => println!("(program produced no value)"),
         Err(message) => println!("Runtime error: {}", message),
     }
 }

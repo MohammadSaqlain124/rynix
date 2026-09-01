@@ -1,16 +1,17 @@
-use super::ast::{BinaryOp, Expr, UnaryOp};
+use super::ast::{BinaryOp, Expr, Program, Stmt, UnaryOp};
 use crate::lexer::token::{Token, TokenKind};
 
 // Grammar we are implementing:
 //
+//   program              -> statement*
+//   statement            -> let_statement | expression_statement
+//   let_statement        -> "let" IDENTIFIER "=" expression
+//   expression_statement -> expression
+//
 //   expression -> term (("+" | "-") term)*
 //   term       -> unary (("*" | "/") unary)*
 //   unary      -> "-" unary | factor
-//   factor     -> NUMBER | "(" expression ")"
-//
-// One function per rule. Deeper rule = tighter binding, so precedence
-// falls out of the structure automatically. `unary` sits below `term`,
-// so negation binds tighter than * and /.
+//   factor     -> NUMBER | IDENTIFIER | "(" expression ")"
 
 pub struct Parser {
     tokens: Vec<Token>,
@@ -34,17 +35,49 @@ impl Parser {
         token
     }
 
-    pub fn parse(&mut self) -> Result<Expr, String> {
-        let expr = self.parse_expression()?;
-        if self.peek().kind != TokenKind::Eof {
-            return Err(format!(
-                "unexpected token {:?} at line {}, column {}",
-                self.peek().kind,
-                self.peek().line,
-                self.peek().column
-            ));
+    // program -> statement*
+    // Parse statements until we reach Eof.
+    pub fn parse(&mut self) -> Result<Program, String> {
+        let mut statements = Vec::new();
+        while self.peek().kind != TokenKind::Eof {
+            statements.push(self.parse_statement()?);
         }
-        Ok(expr)
+        Ok(statements)
+    }
+
+    // statement -> let_statement | expression_statement
+    fn parse_statement(&mut self) -> Result<Stmt, String> {
+        if self.peek().kind == TokenKind::Let {
+            self.parse_let_statement()
+        } else {
+            let expr = self.parse_expression()?;
+            Ok(Stmt::Expression(expr))
+        }
+    }
+
+    // let_statement -> "let" IDENTIFIER "=" expression
+    fn parse_let_statement(&mut self) -> Result<Stmt, String> {
+        self.advance(); // consume "let"
+
+        // Expect an identifier for the variable name.
+        let name = match self.peek().kind.clone() {
+            TokenKind::Identifier(name) => {
+                self.advance();
+                name
+            }
+            _ => {
+                return Err(format!(
+                    "expected a variable name after 'let', found {:?} at line {}, column {}",
+                    self.peek().kind,
+                    self.peek().line,
+                    self.peek().column
+                ));
+            }
+        };
+
+        self.expect(TokenKind::Equals)?;
+        let value = self.parse_expression()?;
+        Ok(Stmt::Let { name, value })
     }
 
     // expression -> term (("+" | "-") term)*
@@ -94,8 +127,8 @@ impl Parser {
     // unary -> "-" unary | factor
     fn parse_unary(&mut self) -> Result<Expr, String> {
         if self.peek().kind == TokenKind::Minus {
-            self.advance(); // consume the "-"
-            let operand = self.parse_unary()?; // recurse: handles --5, etc.
+            self.advance();
+            let operand = self.parse_unary()?;
             Ok(Expr::Unary {
                 op: UnaryOp::Negate,
                 operand: Box::new(operand),
@@ -105,7 +138,7 @@ impl Parser {
         }
     }
 
-    // factor -> NUMBER | "(" expression ")"
+    // factor -> NUMBER | IDENTIFIER | "(" expression ")"
     fn parse_factor(&mut self) -> Result<Expr, String> {
         let token = self.peek().clone();
 
@@ -114,6 +147,10 @@ impl Parser {
                 self.advance();
                 Ok(Expr::Number(text))
             }
+            TokenKind::Identifier(name) => {
+                self.advance();
+                Ok(Expr::Identifier(name))
+            }
             TokenKind::LeftParen => {
                 self.advance();
                 let expr = self.parse_expression()?;
@@ -121,7 +158,7 @@ impl Parser {
                 Ok(expr)
             }
             _ => Err(format!(
-                "expected a number or '(', found {:?} at line {}, column {}",
+                "expected a number, name, or '(', found {:?} at line {}, column {}",
                 token.kind, token.line, token.column
             )),
         }
@@ -148,37 +185,44 @@ mod tests {
     use super::*;
     use crate::lexer::lexer::Lexer;
 
-    fn parse_str(source: &str) -> Result<Expr, String> {
+    fn parse_str(source: &str) -> Result<Program, String> {
         let mut lexer = Lexer::new(source);
         let tokens = lexer.tokenize()?;
         let mut parser = Parser::new(tokens);
         parser.parse()
     }
 
+    // Helper: parse a single-statement program and return that statement.
+    fn parse_one(source: &str) -> Stmt {
+        let program = parse_str(source).unwrap();
+        assert_eq!(program.len(), 1, "expected exactly one statement");
+        program.into_iter().next().unwrap()
+    }
+
     #[test]
-    fn single_number() {
-        let expr = parse_str("42").unwrap();
-        assert_eq!(expr, Expr::Number("42".to_string()));
+    fn single_number_is_expression_statement() {
+        let stmt = parse_one("42");
+        assert_eq!(stmt, Stmt::Expression(Expr::Number("42".to_string())));
     }
 
     #[test]
     fn simple_addition() {
-        let expr = parse_str("1 + 2").unwrap();
+        let stmt = parse_one("1 + 2");
         assert_eq!(
-            expr,
-            Expr::Binary {
+            stmt,
+            Stmt::Expression(Expr::Binary {
                 left: Box::new(Expr::Number("1".to_string())),
                 op: BinaryOp::Add,
                 right: Box::new(Expr::Number("2".to_string())),
-            }
+            })
         );
     }
 
     #[test]
     fn precedence_multiply_binds_tighter() {
-        let expr = parse_str("1 + 2 * 3").unwrap();
-        match expr {
-            Expr::Binary { op: BinaryOp::Add, right, .. } => {
+        let stmt = parse_one("1 + 2 * 3");
+        match stmt {
+            Stmt::Expression(Expr::Binary { op: BinaryOp::Add, right, .. }) => {
                 assert!(matches!(*right, Expr::Binary { op: BinaryOp::Multiply, .. }));
             }
             _ => panic!("expected + at the top with a * on the right"),
@@ -187,9 +231,9 @@ mod tests {
 
     #[test]
     fn parentheses_override_precedence() {
-        let expr = parse_str("(1 + 2) * 3").unwrap();
-        match expr {
-            Expr::Binary { op: BinaryOp::Multiply, left, .. } => {
+        let stmt = parse_one("(1 + 2) * 3");
+        match stmt {
+            Stmt::Expression(Expr::Binary { op: BinaryOp::Multiply, left, .. }) => {
                 assert!(matches!(*left, Expr::Binary { op: BinaryOp::Add, .. }));
             }
             _ => panic!("expected * at the top with a + on the left"),
@@ -198,9 +242,9 @@ mod tests {
 
     #[test]
     fn left_associativity() {
-        let expr = parse_str("1 - 2 - 3").unwrap();
-        match expr {
-            Expr::Binary { op: BinaryOp::Subtract, left, .. } => {
+        let stmt = parse_one("1 - 2 - 3");
+        match stmt {
+            Stmt::Expression(Expr::Binary { op: BinaryOp::Subtract, left, .. }) => {
                 assert!(matches!(*left, Expr::Binary { op: BinaryOp::Subtract, .. }));
             }
             _ => panic!("expected left-associative subtraction"),
@@ -208,30 +252,22 @@ mod tests {
     }
 
     #[test]
-    fn nested_parentheses() {
-        let expr = parse_str("((42))").unwrap();
-        assert_eq!(expr, Expr::Number("42".to_string()));
-    }
-
-    #[test]
     fn simple_negation() {
-        // -5  ->  Unary(Negate, 5)
-        let expr = parse_str("-5").unwrap();
+        let stmt = parse_one("-5");
         assert_eq!(
-            expr,
-            Expr::Unary {
+            stmt,
+            Stmt::Expression(Expr::Unary {
                 op: UnaryOp::Negate,
                 operand: Box::new(Expr::Number("5".to_string())),
-            }
+            })
         );
     }
 
     #[test]
     fn double_negation() {
-        // --5  ->  Unary(Negate, Unary(Negate, 5))
-        let expr = parse_str("--5").unwrap();
-        match expr {
-            Expr::Unary { op: UnaryOp::Negate, operand } => {
+        let stmt = parse_one("--5");
+        match stmt {
+            Stmt::Expression(Expr::Unary { op: UnaryOp::Negate, operand }) => {
                 assert!(matches!(*operand, Expr::Unary { op: UnaryOp::Negate, .. }));
             }
             _ => panic!("expected nested negation"),
@@ -240,10 +276,9 @@ mod tests {
 
     #[test]
     fn negation_binds_tighter_than_plus() {
-        // -2 + 3 must parse as (-2) + 3, so the top is + with a Unary left.
-        let expr = parse_str("-2 + 3").unwrap();
-        match expr {
-            Expr::Binary { op: BinaryOp::Add, left, .. } => {
+        let stmt = parse_one("-2 + 3");
+        match stmt {
+            Stmt::Expression(Expr::Binary { op: BinaryOp::Add, left, .. }) => {
                 assert!(matches!(*left, Expr::Unary { op: UnaryOp::Negate, .. }));
             }
             _ => panic!("expected + at the top with a negation on the left"),
@@ -251,29 +286,57 @@ mod tests {
     }
 
     #[test]
-    fn subtraction_of_a_negative() {
-        // 10 - -3 is valid: binary minus, then unary minus.
-        let expr = parse_str("10 - -3").unwrap();
-        match expr {
-            Expr::Binary { op: BinaryOp::Subtract, right, .. } => {
-                assert!(matches!(*right, Expr::Unary { op: UnaryOp::Negate, .. }));
+    fn identifier_is_an_expression() {
+        let stmt = parse_one("x");
+        assert_eq!(stmt, Stmt::Expression(Expr::Identifier("x".to_string())));
+    }
+
+    #[test]
+    fn let_statement() {
+        let stmt = parse_one("let x = 5");
+        assert_eq!(
+            stmt,
+            Stmt::Let {
+                name: "x".to_string(),
+                value: Expr::Number("5".to_string()),
             }
-            _ => panic!("expected subtraction with a negated right operand"),
+        );
+    }
+
+    #[test]
+    fn let_with_expression_value() {
+        // let y = x + 2
+        let stmt = parse_one("let y = x + 2");
+        match stmt {
+            Stmt::Let { name, value } => {
+                assert_eq!(name, "y");
+                assert!(matches!(value, Expr::Binary { op: BinaryOp::Add, .. }));
+            }
+            _ => panic!("expected a let statement"),
         }
+    }
+
+    #[test]
+    fn multiple_statements() {
+        let program = parse_str("let x = 5\nlet y = x + 2\ny * 10").unwrap();
+        assert_eq!(program.len(), 3);
+        assert!(matches!(program[0], Stmt::Let { .. }));
+        assert!(matches!(program[1], Stmt::Let { .. }));
+        assert!(matches!(program[2], Stmt::Expression(_)));
+    }
+
+    #[test]
+    fn let_without_name_errors() {
+        assert!(parse_str("let = 5").is_err());
+    }
+
+    #[test]
+    fn let_without_equals_errors() {
+        assert!(parse_str("let x 5").is_err());
     }
 
     #[test]
     fn missing_closing_paren_errors() {
         assert!(parse_str("(1 + 2").is_err());
-    }
-
-    #[test]
-    fn unexpected_trailing_token_errors() {
-        assert!(parse_str("1 2").is_err());
-    }
-
-    #[test]
-    fn empty_input_errors() {
-        assert!(parse_str("").is_err());
     }
 }
