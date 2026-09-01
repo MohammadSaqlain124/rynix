@@ -708,3 +708,91 @@ trees still cannot be computed.
 Rynix computes. Full pipeline source -> tokens -> AST -> result, with
 correct precedence/associativity, integer semantics, division-by-zero
 handling. 38 passing tests, no warnings.
+
+---
+
+## 14. Unary minus (prefix operators)
+
+### The problem
+
+Rynix couldn't handle `-5`. Our grammar only knew `-` as a BINARY
+operator — something BETWEEN two values (`8 - 3`). But in `-5`, the `-`
+sits IN FRONT OF one value. Different shape, no rule for it.
+
+### Binary vs unary operators
+
+- BINARY (infix): between two operands. `a + b`, `a - b`. Needs a left
+  AND a right side.
+- UNARY (prefix): in front of one operand. `-5`, `-x`, `-(a + b)`. Needs
+  only one thing, on its right.
+
+The `-` character now does DOUBLE DUTY: binary in `8 - 3` (subtraction),
+unary in `-5` (negation). Same symbol, two roles.
+
+Analogy: the word "left" — "I LEFT the room" (verb) vs "turn LEFT"
+(direction). Same word, role decided by WHERE it appears.
+
+### Position decides the role
+
+- A `-` that appears AFTER a complete value -> binary subtraction.
+- A `-` that appears WHERE A VALUE IS EXPECTED (start of expression,
+  after `(`, after another operator) -> unary negation.
+
+Example `10 - -3`: the first `-` comes after `10` (a complete value) ->
+binary. The second appears where a new value is expected -> unary. Result:
+10 - (-3) = 13. The parser never "figures out which minus is which" — the
+grammar structure routes each one to the right function based on where the
+parser is.
+
+### Where unary fits in the grammar
+
+Unary minus binds TIGHTER than * and /: `-2 + 3` is `(-2) + 3 = 1`, not
+`-(2 + 3) = -5`. By the "deeper rule = tighter binding" rule, unary sits
+BELOW `term`, above `factor`:
+
+    expression -> term (("+" | "-") term)*
+    term       -> unary (("*" | "/") unary)*
+    unary      -> "-" unary | factor          <- NEW
+    factor     -> NUMBER | "(" expression ")"
+
+`term` now calls `unary` instead of `factor`. Because `term` calls
+`unary` and `unary` finishes first, negation is fully parsed before * or
+/ is applied -> binds tighter.
+
+### The recursion in `unary`
+
+    unary -> "-" unary | factor
+
+`unary` refers to ITSELF. That is what lets `--5` (and `---5`) work: a `-`
+followed by a unary, which is another `-` followed by a unary, until it
+bottoms out at a factor. A non-recursive rule (`"-" factor | factor`)
+would only allow ONE leading minus. `--5` = -(-5) = 5.
+
+The `| factor` alternative is the "no leading minus" path — plain numbers
+flow straight through untouched.
+
+### Why the change was small (localized)
+
+Because the parser is one-function-per-rule, adding a precedence level
+meant: add ONE function (`parse_unary`) and change ONE word in
+`parse_term` (call `parse_unary` instead of `parse_factor`).
+`parse_expression` and `parse_factor` were untouched. This is the payoff
+of the layered grammar: precedence changes are contained, not a rewrite.
+
+### The evaluator
+
+New AST node `Unary { op, operand }` and `UnaryOp::Negate`. Evaluation:
+evaluate the operand (children-first, same principle), then apply the
+operator (`Negate` -> `-value`). Three lines. It's a `match` (not an `if`)
+on the operator so that adding future unary operators forces us to handle
+them.
+
+### Files
+- src/parser/ast.rs — added Unary variant + UnaryOp enum.
+- src/parser/parser.rs — added parse_unary; term now calls it.
+- src/interpreter/eval.rs — added the Negate rule.
+- src/main.rs — demo with negation.
+
+### Status
+Unary minus works: -5, -(3+2), --5, correct precedence (-2 + 3 = 1,
+-2 * 3 = -6), mixed binary/unary (10 - -3 = 13). 49 passing tests.
