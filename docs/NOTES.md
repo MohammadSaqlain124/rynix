@@ -895,3 +895,97 @@ evaluator.
 Multi-statement programs run. Variables are defined, remembered across
 statements, looked up, and overwritten by re-let. Undefined variables
 error cleanly. `let x = 5; let y = x + 2; y * 10` -> 70. 58 passing tests.
+
+---
+
+## 16. Assignment — declaration vs reassignment
+
+We already had `let` (which overwrote on re-declare). Now we add proper
+bare assignment: `x = 10` reassigns an EXISTING variable, and assigning to
+one that was never declared is an ERROR. This cleanly separates two ideas:
+
+- `let x = 5` — DECLARE: create a new variable.
+- `x = 10`    — REASSIGN: change an existing one.
+- `x = 10` with no prior `let x` -> error ("cannot assign to undefined
+  variable").
+
+Reading `let x` you know a variable is being CREATED; reading `x =` you
+know an existing one is being CHANGED. The syntax communicates intent.
+
+### The wrinkle: `=` and identifiers do double duty
+
+The `=` token appears in BOTH `let x = 5` and `x = 10`. And an identifier
+at the START of a statement is ambiguous:
+- `x = 10`  -> assignment
+- `x + 2`   -> expression statement (x used as a value)
+- `x`       -> expression statement (bare)
+
+### One-token lookahead resolves it
+
+When the parser sees an identifier starting a statement, it PEEKS at the
+NEXT token:
+- identifier followed by `=`  -> assignment
+- identifier followed by anything else -> expression statement
+
+This needs `peek_next` (look one token past current) — the parser-level
+version of the lexer's two-char lookahead for comments.
+
+### Why `let` is NOT ambiguous but an identifier IS
+
+`let` is a DEDICATED keyword — it can only begin a let-statement. Seeing
+`let` IS the decision. An identifier is OVERLOADED — it can begin an
+assignment OR an expression — so the identifier alone isn't enough; the
+parser must look one token ahead.
+
+Dedicated keyword vs overloaded token is a useful lens: a dedicated token
+decides the rule instantly; an overloaded one needs lookahead.
+
+Analogy: a sentence starting with a name. "Sam runs fast" (Sam = subject,
+a value) vs "Sam, come here" (Sam = addressed, an action). You don't know
+which until the NEXT word (verb vs comma). The parser peeks the same way.
+
+### The grammar
+
+    statement -> let_statement | assignment | expression_statement
+    let_statement -> "let" IDENTIFIER "=" expression
+    assignment    -> IDENTIFIER "=" expression
+    expression_statement -> expression
+
+`assignment` and `expression_statement` both start with IDENTIFIER — the
+lookahead is what tells them apart.
+
+### The evaluator: same insert, one extra check
+
+Both `Let` and `Assign` ultimately call `env.insert(name, value)`. The
+difference is a guard BEFORE it:
+
+- `Let`    -> insert unconditionally (create or overwrite).
+- `Assign` -> FIRST check `env.contains_key(name)`. If absent, error. Only
+  if present, insert.
+
+That single existence check is the entire difference between declaration
+and reassignment. `let` may create; `=` may only change what already
+exists.
+
+### Subtle: `x = x + 1` uses the current value
+
+The right-hand side is evaluated FIRST (with x's current value), THEN
+stored back. `x = x + 1` when x is 5: evaluate `x + 1` = 6, then insert 6.
+Order in `exec` matters: eval the value, then update.
+
+### Files
+- src/parser/ast.rs — added Stmt::Assign.
+- src/parser/parser.rs — added peek_next + lookahead in parse_statement;
+  parse_assignment.
+- src/interpreter/eval.rs — Assign rule with the existence check.
+- src/main.rs — demo reassignment.
+
+### Gotcha I hit
+Editing 4 files at once, I missed saving ast.rs. Rust gave 5 errors, all
+"Assign not found", all pointing at ast.rs. Lesson: many errors pointing
+at ONE definition site = that file wasn't updated. Read errors literally.
+
+### Status
+Mutability complete: let declares, = reassigns (errors if undefined),
+assignment uses current values. `let x = 5; x = x + 10; x * 2` -> 30.
+52 passing tests.
