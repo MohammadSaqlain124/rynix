@@ -1,14 +1,16 @@
-use super::ast::{BinaryOp, Expr};
+use super::ast::{BinaryOp, Expr, UnaryOp};
 use crate::lexer::token::{Token, TokenKind};
 
 // Grammar we are implementing:
 //
 //   expression -> term (("+" | "-") term)*
-//   term       -> factor (("*" | "/") factor)*
+//   term       -> unary (("*" | "/") unary)*
+//   unary      -> "-" unary | factor
 //   factor     -> NUMBER | "(" expression ")"
 //
 // One function per rule. Deeper rule = tighter binding, so precedence
-// falls out of the structure automatically.
+// falls out of the structure automatically. `unary` sits below `term`,
+// so negation binds tighter than * and /.
 
 pub struct Parser {
     tokens: Vec<Token>,
@@ -20,24 +22,18 @@ impl Parser {
         Parser { tokens, pos: 0 }
     }
 
-    // Look at the current token without consuming it.
     fn peek(&self) -> &Token {
         &self.tokens[self.pos]
     }
 
-    // Consume the current token and move forward, returning what we
-    // consumed.
     fn advance(&mut self) -> Token {
         let token = self.tokens[self.pos].clone();
-        // Don't move past the final Eof token.
         if self.pos < self.tokens.len() - 1 {
             self.pos += 1;
         }
         token
     }
 
-    // Entry point: parse a whole expression and make sure nothing is left
-    // over (apart from Eof).
     pub fn parse(&mut self) -> Result<Expr, String> {
         let expr = self.parse_expression()?;
         if self.peek().kind != TokenKind::Eof {
@@ -61,7 +57,7 @@ impl Parser {
                 TokenKind::Minus => BinaryOp::Subtract,
                 _ => break,
             };
-            self.advance(); // consume the operator
+            self.advance();
             let right = self.parse_term()?;
             left = Expr::Binary {
                 left: Box::new(left),
@@ -73,9 +69,9 @@ impl Parser {
         Ok(left)
     }
 
-    // term -> factor (("*" | "/") factor)*
+    // term -> unary (("*" | "/") unary)*
     fn parse_term(&mut self) -> Result<Expr, String> {
-        let mut left = self.parse_factor()?;
+        let mut left = self.parse_unary()?;
 
         loop {
             let op = match self.peek().kind {
@@ -83,8 +79,8 @@ impl Parser {
                 TokenKind::Slash => BinaryOp::Divide,
                 _ => break,
             };
-            self.advance(); // consume the operator
-            let right = self.parse_factor()?;
+            self.advance();
+            let right = self.parse_unary()?;
             left = Expr::Binary {
                 left: Box::new(left),
                 op,
@@ -93,6 +89,20 @@ impl Parser {
         }
 
         Ok(left)
+    }
+
+    // unary -> "-" unary | factor
+    fn parse_unary(&mut self) -> Result<Expr, String> {
+        if self.peek().kind == TokenKind::Minus {
+            self.advance(); // consume the "-"
+            let operand = self.parse_unary()?; // recurse: handles --5, etc.
+            Ok(Expr::Unary {
+                op: UnaryOp::Negate,
+                operand: Box::new(operand),
+            })
+        } else {
+            self.parse_factor()
+        }
     }
 
     // factor -> NUMBER | "(" expression ")"
@@ -105,7 +115,7 @@ impl Parser {
                 Ok(Expr::Number(text))
             }
             TokenKind::LeftParen => {
-                self.advance(); // consume "("
+                self.advance();
                 let expr = self.parse_expression()?;
                 self.expect(TokenKind::RightParen)?;
                 Ok(expr)
@@ -117,8 +127,6 @@ impl Parser {
         }
     }
 
-    // Consume the current token only if it matches the expected kind,
-    // otherwise produce an error.
     fn expect(&mut self, kind: TokenKind) -> Result<(), String> {
         if self.peek().kind == kind {
             self.advance();
@@ -140,10 +148,9 @@ mod tests {
     use super::*;
     use crate::lexer::lexer::Lexer;
 
-    // Helper: lex then parse a source string.
     fn parse_str(source: &str) -> Result<Expr, String> {
         let mut lexer = Lexer::new(source);
-        let tokens = lexer.tokenize().map_err(|e| e)?;
+        let tokens = lexer.tokenize()?;
         let mut parser = Parser::new(tokens);
         parser.parse()
     }
@@ -156,7 +163,6 @@ mod tests {
 
     #[test]
     fn simple_addition() {
-        // 1 + 2  ->  (+ 1 2)
         let expr = parse_str("1 + 2").unwrap();
         assert_eq!(
             expr,
@@ -170,15 +176,10 @@ mod tests {
 
     #[test]
     fn precedence_multiply_binds_tighter() {
-        // 1 + 2 * 3 must parse as 1 + (2 * 3), NOT (1 + 2) * 3.
-        // So the top node is +, and its right child is a *.
         let expr = parse_str("1 + 2 * 3").unwrap();
         match expr {
             Expr::Binary { op: BinaryOp::Add, right, .. } => {
-                assert!(matches!(
-                    *right,
-                    Expr::Binary { op: BinaryOp::Multiply, .. }
-                ));
+                assert!(matches!(*right, Expr::Binary { op: BinaryOp::Multiply, .. }));
             }
             _ => panic!("expected + at the top with a * on the right"),
         }
@@ -186,14 +187,10 @@ mod tests {
 
     #[test]
     fn parentheses_override_precedence() {
-        // (1 + 2) * 3 must parse with * at the top and + as its left child.
         let expr = parse_str("(1 + 2) * 3").unwrap();
         match expr {
             Expr::Binary { op: BinaryOp::Multiply, left, .. } => {
-                assert!(matches!(
-                    *left,
-                    Expr::Binary { op: BinaryOp::Add, .. }
-                ));
+                assert!(matches!(*left, Expr::Binary { op: BinaryOp::Add, .. }));
             }
             _ => panic!("expected * at the top with a + on the left"),
         }
@@ -201,15 +198,10 @@ mod tests {
 
     #[test]
     fn left_associativity() {
-        // 1 - 2 - 3 must parse as (1 - 2) - 3, not 1 - (2 - 3).
-        // So the top node is a - whose LEFT child is another -.
         let expr = parse_str("1 - 2 - 3").unwrap();
         match expr {
             Expr::Binary { op: BinaryOp::Subtract, left, .. } => {
-                assert!(matches!(
-                    *left,
-                    Expr::Binary { op: BinaryOp::Subtract, .. }
-                ));
+                assert!(matches!(*left, Expr::Binary { op: BinaryOp::Subtract, .. }));
             }
             _ => panic!("expected left-associative subtraction"),
         }
@@ -222,21 +214,66 @@ mod tests {
     }
 
     #[test]
+    fn simple_negation() {
+        // -5  ->  Unary(Negate, 5)
+        let expr = parse_str("-5").unwrap();
+        assert_eq!(
+            expr,
+            Expr::Unary {
+                op: UnaryOp::Negate,
+                operand: Box::new(Expr::Number("5".to_string())),
+            }
+        );
+    }
+
+    #[test]
+    fn double_negation() {
+        // --5  ->  Unary(Negate, Unary(Negate, 5))
+        let expr = parse_str("--5").unwrap();
+        match expr {
+            Expr::Unary { op: UnaryOp::Negate, operand } => {
+                assert!(matches!(*operand, Expr::Unary { op: UnaryOp::Negate, .. }));
+            }
+            _ => panic!("expected nested negation"),
+        }
+    }
+
+    #[test]
+    fn negation_binds_tighter_than_plus() {
+        // -2 + 3 must parse as (-2) + 3, so the top is + with a Unary left.
+        let expr = parse_str("-2 + 3").unwrap();
+        match expr {
+            Expr::Binary { op: BinaryOp::Add, left, .. } => {
+                assert!(matches!(*left, Expr::Unary { op: UnaryOp::Negate, .. }));
+            }
+            _ => panic!("expected + at the top with a negation on the left"),
+        }
+    }
+
+    #[test]
+    fn subtraction_of_a_negative() {
+        // 10 - -3 is valid: binary minus, then unary minus.
+        let expr = parse_str("10 - -3").unwrap();
+        match expr {
+            Expr::Binary { op: BinaryOp::Subtract, right, .. } => {
+                assert!(matches!(*right, Expr::Unary { op: UnaryOp::Negate, .. }));
+            }
+            _ => panic!("expected subtraction with a negated right operand"),
+        }
+    }
+
+    #[test]
     fn missing_closing_paren_errors() {
-        let result = parse_str("(1 + 2");
-        assert!(result.is_err());
+        assert!(parse_str("(1 + 2").is_err());
     }
 
     #[test]
     fn unexpected_trailing_token_errors() {
-        // "1 2" — a second number with no operator between is invalid.
-        let result = parse_str("1 2");
-        assert!(result.is_err());
+        assert!(parse_str("1 2").is_err());
     }
 
     #[test]
     fn empty_input_errors() {
-        let result = parse_str("");
-        assert!(result.is_err());
+        assert!(parse_str("").is_err());
     }
 }

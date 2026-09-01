@@ -7,7 +7,7 @@ use lexer::lexer::Lexer;
 use parser::parser::Parser;
 
 fn main() {
-    let source = "1 + 2 * (3 - 4)";
+    let source = "-2 * (3 - 5) + -1";
     println!("Rynix v0.1.0 — evaluating: {}", source);
 
     let mut lex = Lexer::new(source);

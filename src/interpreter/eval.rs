@@ -1,23 +1,26 @@
-use crate::parser::ast::{BinaryOp, Expr};
+use crate::parser::ast::{BinaryOp, Expr, UnaryOp};
 
 // Evaluate an expression tree down to a single integer.
 //
-// Two rules:
+// Rules:
 //   - Number  -> interpret its text as an i64.
+//   - Unary   -> evaluate the operand, then apply the unary operator.
 //   - Binary  -> evaluate both children, then combine with the operator.
 //
 // The children-first order means precedence (already encoded in the tree
-// shape by the parser) is obeyed automatically — this function knows
-// nothing about which operator binds tighter.
+// shape by the parser) is obeyed automatically.
 pub fn eval(expr: &Expr) -> Result<i64, String> {
     match expr {
-        // This is where the deferred "integers are i64" decision finally
-        // lands. The lexer and parser kept the number as text; the phase
-        // that actually does arithmetic is the right place to commit to a
-        // representation.
         Expr::Number(text) => text
             .parse::<i64>()
             .map_err(|_| format!("invalid integer literal: {}", text)),
+
+        Expr::Unary { op, operand } => {
+            let value = eval(operand)?;
+            match op {
+                UnaryOp::Negate => Ok(-value),
+            }
+        }
 
         Expr::Binary { left, op, right } => {
             let l = eval(left)?;
@@ -44,7 +47,6 @@ mod tests {
     use crate::lexer::lexer::Lexer;
     use crate::parser::parser::Parser;
 
-    // Helper: lex, parse, and evaluate a source string.
     fn eval_str(source: &str) -> Result<i64, String> {
         let mut lexer = Lexer::new(source);
         let tokens = lexer.tokenize()?;
@@ -65,19 +67,16 @@ mod tests {
 
     #[test]
     fn precedence_is_obeyed() {
-        // 1 + 2 * 3 = 7, not 9.
         assert_eq!(eval_str("1 + 2 * 3").unwrap(), 7);
     }
 
     #[test]
     fn parentheses_change_the_result() {
-        // (1 + 2) * 3 = 9.
         assert_eq!(eval_str("(1 + 2) * 3").unwrap(), 9);
     }
 
     #[test]
     fn left_associative_subtraction() {
-        // 1 - 2 - 3 = (1 - 2) - 3 = -4, not 2.
         assert_eq!(eval_str("1 - 2 - 3").unwrap(), -4);
     }
 
@@ -88,7 +87,6 @@ mod tests {
 
     #[test]
     fn integer_division_truncates() {
-        // i64 division discards the remainder: 7 / 2 = 3.
         assert_eq!(eval_str("7 / 2").unwrap(), 3);
     }
 
@@ -99,7 +97,41 @@ mod tests {
 
     #[test]
     fn nested_expression() {
-        // 1 + 2 * (3 - 4) = 1 + 2 * (-1) = 1 + (-2) = -1.
         assert_eq!(eval_str("1 + 2 * (3 - 4)").unwrap(), -1);
+    }
+
+    #[test]
+    fn simple_negation() {
+        assert_eq!(eval_str("-5").unwrap(), -5);
+    }
+
+    #[test]
+    fn negate_a_group() {
+        // -(3 + 2) = -5
+        assert_eq!(eval_str("-(3 + 2)").unwrap(), -5);
+    }
+
+    #[test]
+    fn double_negation_cancels() {
+        // --5 = 5
+        assert_eq!(eval_str("--5").unwrap(), 5);
+    }
+
+    #[test]
+    fn negation_precedence() {
+        // -2 + 3 = (-2) + 3 = 1, not -(2 + 3) = -5
+        assert_eq!(eval_str("-2 + 3").unwrap(), 1);
+    }
+
+    #[test]
+    fn subtract_a_negative() {
+        // 10 - -3 = 13
+        assert_eq!(eval_str("10 - -3").unwrap(), 13);
+    }
+
+    #[test]
+    fn negation_binds_tighter_than_multiply() {
+        // -2 * 3 = (-2) * 3 = -6
+        assert_eq!(eval_str("-2 * 3").unwrap(), -6);
     }
 }
