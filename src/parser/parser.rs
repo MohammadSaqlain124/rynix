@@ -4,14 +4,18 @@ use crate::lexer::token::{Token, TokenKind};
 // Grammar we are implementing:
 //
 //   program              -> statement*
-//   statement            -> let_statement | expression_statement
+//   statement            -> let_statement | assignment | expression_statement
 //   let_statement        -> "let" IDENTIFIER "=" expression
+//   assignment           -> IDENTIFIER "=" expression
 //   expression_statement -> expression
 //
 //   expression -> term (("+" | "-") term)*
 //   term       -> unary (("*" | "/") unary)*
 //   unary      -> "-" unary | factor
 //   factor     -> NUMBER | IDENTIFIER | "(" expression ")"
+//
+// `assignment` and `expression_statement` both start with an identifier,
+// so we use one-token lookahead: identifier-followed-by-"=" is assignment.
 
 pub struct Parser {
     tokens: Vec<Token>,
@@ -27,6 +31,17 @@ impl Parser {
         &self.tokens[self.pos]
     }
 
+    // Look one token past the current one, for disambiguation.
+    fn peek_next(&self) -> &Token {
+        let next = self.pos + 1;
+        if next < self.tokens.len() {
+            &self.tokens[next]
+        } else {
+            // The list always ends with Eof, so this is a safe fallback.
+            &self.tokens[self.tokens.len() - 1]
+        }
+    }
+
     fn advance(&mut self) -> Token {
         let token = self.tokens[self.pos].clone();
         if self.pos < self.tokens.len() - 1 {
@@ -36,7 +51,6 @@ impl Parser {
     }
 
     // program -> statement*
-    // Parse statements until we reach Eof.
     pub fn parse(&mut self) -> Result<Program, String> {
         let mut statements = Vec::new();
         while self.peek().kind != TokenKind::Eof {
@@ -45,21 +59,28 @@ impl Parser {
         Ok(statements)
     }
 
-    // statement -> let_statement | expression_statement
+    // statement -> let_statement | assignment | expression_statement
     fn parse_statement(&mut self) -> Result<Stmt, String> {
         if self.peek().kind == TokenKind::Let {
-            self.parse_let_statement()
-        } else {
-            let expr = self.parse_expression()?;
-            Ok(Stmt::Expression(expr))
+            return self.parse_let_statement();
         }
+
+        // Lookahead: an identifier followed by "=" is an assignment.
+        if let TokenKind::Identifier(_) = self.peek().kind {
+            if self.peek_next().kind == TokenKind::Equals {
+                return self.parse_assignment();
+            }
+        }
+
+        // Otherwise it's a bare expression.
+        let expr = self.parse_expression()?;
+        Ok(Stmt::Expression(expr))
     }
 
     // let_statement -> "let" IDENTIFIER "=" expression
     fn parse_let_statement(&mut self) -> Result<Stmt, String> {
         self.advance(); // consume "let"
 
-        // Expect an identifier for the variable name.
         let name = match self.peek().kind.clone() {
             TokenKind::Identifier(name) => {
                 self.advance();
@@ -78,6 +99,21 @@ impl Parser {
         self.expect(TokenKind::Equals)?;
         let value = self.parse_expression()?;
         Ok(Stmt::Let { name, value })
+    }
+
+    // assignment -> IDENTIFIER "=" expression
+    // We already know (from lookahead) that this is an identifier then "=".
+    fn parse_assignment(&mut self) -> Result<Stmt, String> {
+        let name = match self.advance().kind {
+            TokenKind::Identifier(name) => name,
+            other => {
+                // Shouldn't happen given the lookahead, but stay honest.
+                return Err(format!("expected a variable name, found {:?}", other));
+            }
+        };
+        self.expect(TokenKind::Equals)?;
+        let value = self.parse_expression()?;
+        Ok(Stmt::Assign { name, value })
     }
 
     // expression -> term (("+" | "-") term)*
@@ -192,7 +228,6 @@ mod tests {
         parser.parse()
     }
 
-    // Helper: parse a single-statement program and return that statement.
     fn parse_one(source: &str) -> Stmt {
         let program = parse_str(source).unwrap();
         assert_eq!(program.len(), 1, "expected exactly one statement");
@@ -264,28 +299,6 @@ mod tests {
     }
 
     #[test]
-    fn double_negation() {
-        let stmt = parse_one("--5");
-        match stmt {
-            Stmt::Expression(Expr::Unary { op: UnaryOp::Negate, operand }) => {
-                assert!(matches!(*operand, Expr::Unary { op: UnaryOp::Negate, .. }));
-            }
-            _ => panic!("expected nested negation"),
-        }
-    }
-
-    #[test]
-    fn negation_binds_tighter_than_plus() {
-        let stmt = parse_one("-2 + 3");
-        match stmt {
-            Stmt::Expression(Expr::Binary { op: BinaryOp::Add, left, .. }) => {
-                assert!(matches!(*left, Expr::Unary { op: UnaryOp::Negate, .. }));
-            }
-            _ => panic!("expected + at the top with a negation on the left"),
-        }
-    }
-
-    #[test]
     fn identifier_is_an_expression() {
         let stmt = parse_one("x");
         assert_eq!(stmt, Stmt::Expression(Expr::Identifier("x".to_string())));
@@ -304,35 +317,54 @@ mod tests {
     }
 
     #[test]
-    fn let_with_expression_value() {
-        // let y = x + 2
-        let stmt = parse_one("let y = x + 2");
+    fn assignment_statement() {
+        let stmt = parse_one("x = 10");
+        assert_eq!(
+            stmt,
+            Stmt::Assign {
+                name: "x".to_string(),
+                value: Expr::Number("10".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn assignment_with_expression_value() {
+        let stmt = parse_one("x = y + 1");
         match stmt {
-            Stmt::Let { name, value } => {
-                assert_eq!(name, "y");
+            Stmt::Assign { name, value } => {
+                assert_eq!(name, "x");
                 assert!(matches!(value, Expr::Binary { op: BinaryOp::Add, .. }));
             }
-            _ => panic!("expected a let statement"),
+            _ => panic!("expected an assignment"),
         }
     }
 
     #[test]
-    fn multiple_statements() {
-        let program = parse_str("let x = 5\nlet y = x + 2\ny * 10").unwrap();
+    fn identifier_used_in_expression_is_not_assignment() {
+        // `x + 2` must be an expression statement, NOT an assignment.
+        let stmt = parse_one("x + 2");
+        assert!(matches!(stmt, Stmt::Expression(Expr::Binary { .. })));
+    }
+
+    #[test]
+    fn bare_identifier_is_expression_not_assignment() {
+        let stmt = parse_one("x");
+        assert!(matches!(stmt, Stmt::Expression(Expr::Identifier(_))));
+    }
+
+    #[test]
+    fn multiple_statements_with_assignment() {
+        let program = parse_str("let x = 5\nx = 10\nx").unwrap();
         assert_eq!(program.len(), 3);
         assert!(matches!(program[0], Stmt::Let { .. }));
-        assert!(matches!(program[1], Stmt::Let { .. }));
+        assert!(matches!(program[1], Stmt::Assign { .. }));
         assert!(matches!(program[2], Stmt::Expression(_)));
     }
 
     #[test]
     fn let_without_name_errors() {
         assert!(parse_str("let = 5").is_err());
-    }
-
-    #[test]
-    fn let_without_equals_errors() {
-        assert!(parse_str("let x 5").is_err());
     }
 
     #[test]

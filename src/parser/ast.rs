@@ -1,8 +1,7 @@
 // The Abstract Syntax Tree (AST) for Rynix.
 //
 // Expressions PRODUCE a value. Statements DO something (an action).
-// They are separate types so the type system keeps them distinct: you
-// can't use a statement where a value is expected.
+// They are separate types so the type system keeps them distinct.
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
@@ -10,8 +9,7 @@ pub enum Expr {
     // independent of how integers are represented (i64 vs bignum).
     Number(String),
 
-    // Using a variable's value, e.g. the `x` in `x + 2`. It's an
-    // expression because, once looked up, it produces a value.
+    // Using a variable's value, e.g. the `x` in `x + 2`.
     Identifier(String),
 
     // A unary operation: OP operand, e.g. -5.
@@ -33,11 +31,14 @@ pub enum Expr {
 // A statement performs an action. A program is a sequence of these.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
-    // `let name = value` — define (or overwrite) a variable.
+    // `let name = value` — DECLARE a new variable (create it).
     Let { name: String, value: Expr },
 
-    // A bare expression on its own, e.g. `y * 10`. We keep its value so
-    // the program can produce visible output.
+    // `name = value` — REASSIGN an existing variable. Assigning to a
+    // variable that was never declared is an error (checked at runtime).
+    Assign { name: String, value: Expr },
+
+    // A bare expression on its own, e.g. `y * 10`.
     Expression(Expr),
 }
 
@@ -50,7 +51,7 @@ pub enum UnaryOp {
     Negate, // -
 }
 
-// The four arithmetic operators. A separate small enum (not reusing
+// The four arithmetic operators. A separate small enum (rather than reusing
 // TokenKind) so an operator is always one of these four valid choices.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BinaryOp {
@@ -124,7 +125,6 @@ mod tests {
 
     #[test]
     fn build_let_statement_by_hand() {
-        // let x = 5
         let stmt = Stmt::Let {
             name: "x".to_string(),
             value: Expr::Number("5".to_string()),
@@ -135,6 +135,21 @@ mod tests {
             assert_eq!(value, Expr::Number("5".to_string()));
         } else {
             panic!("expected a Let statement");
+        }
+    }
+
+    #[test]
+    fn build_assign_statement_by_hand() {
+        let stmt = Stmt::Assign {
+            name: "x".to_string(),
+            value: Expr::Number("10".to_string()),
+        };
+
+        if let Stmt::Assign { name, value } = stmt {
+            assert_eq!(name, "x");
+            assert_eq!(value, Expr::Number("10".to_string()));
+        } else {
+            panic!("expected an Assign statement");
         }
     }
 }

@@ -7,7 +7,7 @@ use lexer::lexer::Lexer;
 use parser::parser::Parser;
 
 fn main() {
-    let source = "let x = 5\nlet y = x + 2\ny * 10";
+    let source = "let x = 5\nx = x + 10\nx * 2";
     println!("Rynix v0.1.0 — running program:\n{}\n", source);
 
     let mut lex = Lexer::new(source);
